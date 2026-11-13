@@ -58,6 +58,8 @@ git commit -m "data: <YYYY-MM-DD HH:MM> <动作> <任务ID或一句话>"
 git push   # 失败不阻塞任务流程，提醒用户稍后重推即可
 ```
 
+**push 报认证失败时**：跑 `python task.py remote` 从 config.json 恢复凭据（令牌存在数据仓 config.json 的 `gitcode` 段，私仓保存），再重试一次。这条命令同时恢复数据仓和工具仓的 remote。
+
 ## 会话开场检查
 
 用户第一次提到任务时，先跑 `python task.py doctor` 确认环境正常（6 项全绿）；有红项先向用户报告，不要带着故障操作。
