@@ -851,6 +851,43 @@ def cmd_export(a):
     out({"ok": True, "exported": arch})
 
 
+def cmd_remote(a):
+    """
+    从 config.json 恢复 git 远端凭据（含令牌），免去换机器后手输账号。
+
+    仓库的 .git/config 不随 git 同步，新机器 clone 下来只带匿名地址。
+    本命令把 config.json 里的 gitcode 配置写回两仓 remote，使 push 免密。
+    """
+    gc = CONFIG.get("gitcode") or {}
+    user, token = gc.get("user"), gc.get("token")
+    host = gc.get("host") or "gitcode.com"
+    if not user or not token:
+        fail("config.json 缺少 gitcode.user / gitcode.token，无法恢复远端凭据")
+
+    data_root = Path(CONFIG["archive_dir"]).resolve()
+    targets = [
+        (gc.get("repo_data") or "xiaomishu-data", data_root),
+        (gc.get("repo_tool") or "xiaomishu", data_root.parent / (gc.get("repo_tool") or "xiaomishu")),
+    ]
+    done = []
+    for repo, path in targets:
+        if not (path / ".git").exists():
+            done.append({"repo": repo, "path": str(path), "ok": False,
+                         "detail": "不是 git 仓库，跳过"})
+            continue
+        url = "https://%s:%s@%s/%s/%s.git" % (user, token, host, user, repo)
+        r = subprocess.run(["git", "-C", str(path), "remote", "set-url", "origin", url],
+                           capture_output=True, text=True)
+        ok = r.returncode == 0
+        done.append({"repo": repo, "path": str(path), "ok": ok,
+                     "detail": "凭据已写入" if ok else (r.stderr or "")[:200],
+                     "url": "https://%s:***@%s/%s/%s.git" % (user, host, user, repo)})
+
+    all_ok = all(d["ok"] for d in done)
+    out({"ok": all_ok, "remotes": done,
+         "hint": "" if all_ok else "有仓库未恢复，检查路径是否存在 .git"})
+
+
 def cmd_sync(a):
     """只重新生成归档，不改数据。改完飞书后手动刷一次用"""
     records = read_all()
@@ -934,6 +971,7 @@ def main():
         ("doctor", cmd_doctor, "环境自检"),
         ("sync", cmd_sync, "重新生成归档"),
         ("export", cmd_export, "导出全量快照"),
+        ("remote", cmd_remote, "从 config 恢复 git 远端凭据"),
     ]:
         sp = sub.add_parser(name, help=h)
         sp.set_defaults(func=fn)
