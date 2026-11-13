@@ -96,6 +96,7 @@ F = {
     "outcome": "完成标准",
     "status": "状态",
     "pri": "优先级",
+    "category": "分类",
     "project": "所属项目",
     "parent": "父任务ID",
     "plan_day": "计划日",
@@ -178,6 +179,22 @@ def norm_pri(v):
     if v is None:
         return "中"
     return PRI_ALIASES.get(str(v).strip(), "中")
+
+
+CATEGORY_ALIASES = {
+    "学习": "学习", "study": "学习", "xuexi": "学习",
+    "工作": "工作", "work": "工作", "gongzuo": "工作",
+}
+
+
+def norm_category(v, default="工作"):
+    if v is None:
+        return default
+    if isinstance(v, list):
+        v = v[0] if v else None
+    if v is None:
+        return default
+    return CATEGORY_ALIASES.get(str(v).strip(), default)
 
 
 def as_list(v):
@@ -308,6 +325,7 @@ def simplify(rec):
         "title": scalar(rec.get(F["title"])) or "",
         "status": norm_status(rec.get(F["status"])) or "todo",
         "pri": norm_pri(rec.get(F["pri"])),
+        "category": norm_category(scalar(rec.get(F["category"]))),
         "project": scalar(rec.get(F["project"])) or "",
         "parent": scalar(rec.get(F["parent"])) or "",
         "outcome": scalar(rec.get(F["outcome"])) or "",
@@ -393,9 +411,10 @@ def archive(records):
         if it["id"] in seen:
             continue
         mark = "✅" if it["status"] == "done" else "⛔"
-        new_rows.append("| %s | %s | %s %s | %s | %s |" % (
+        new_rows.append("| %s | %s | %s %s | %s | %s | %s |" % (
             it["done_at"] or it["updated"] or "",
             it["id"], mark, it["title"].replace("|", "/"),
+            it["category"],
             it["project"].replace("|", "/"),
             (it["summary"] or it["output"] or "").replace("|", "/"),
         ))
@@ -404,8 +423,8 @@ def archive(records):
         header = ""
         if not ledger.exists():
             header = ("# %s 月度台账\n\n"
-                      "| 完成时间 | ID | 任务 | 项目 | 结论 |\n"
-                      "|---|---|---|---|---|\n" % now().strftime("%Y-%m"))
+                      "| 完成时间 | ID | 任务 | 分类 | 项目 | 结论 |\n"
+                      "|---|---|---|---|---|---|\n" % now().strftime("%Y-%m"))
         with open(ledger, "a", encoding="utf-8") as f:
             if header:
                 f.write(header)
@@ -537,10 +556,12 @@ def cmd_add(a):
         fail("任务名不能为空")
 
     status = STATUS_ALIASES.get(a.status, "todo") if a.status else "todo"
+    category = norm_category(a.category)
     fields = {
         F["title"]: a.title.strip(),
         F["status"]: [STATUS[status]],
         F["pri"]: [norm_pri(a.pri)],
+        F["category"]: [category],
     }
     if a.outcome:
         fields[F["outcome"]] = a.outcome.strip()
@@ -626,6 +647,21 @@ def cmd_done(a):
         fail("完成必须写一句结论（--summary）。"
              "这条规则是为了防止「假完成」：只发了个消息问别人不算完成。")
 
+    category = cur["category"]
+
+    # 报告内容：要么 --report 给完整文件，要么用结构化参数拼装
+    report_body = None
+    if a.report:
+        rp = Path(a.report)
+        if not rp.exists():
+            fail("报告文件不存在：%s" % a.report)
+        text = rp.read_text(encoding="utf-8").strip()
+        missing = check_report_sections(text, category)
+        if missing:
+            fail("报告缺少必需章节：%s。学习报告需含「学习目标/学习过程/结论/推理过程」，"
+                 "工作报告需含「工作任务/结果/核心过程/遗留」。" % "、".join(missing))
+        report_body = text
+
     fields = {
         F["status"]: [STATUS["done"]],
         F["done_at"]: ms(now()),
@@ -639,26 +675,67 @@ def cmd_done(a):
 
     update_record(rec["_record_id"], fields)
 
-    # 单件总结写进归档目录
+    # 单件报告：按分类分文件夹存放
     root = Path(CONFIG["archive_dir"])
-    notes_dir = root / "notes" / now().strftime("%Y")
+    notes_dir = root / "notes" / category / now().strftime("%Y")
     notes_dir.mkdir(parents=True, exist_ok=True)
     safe = "".join(c for c in cur["title"] if c not in '\\/:*?"<>|').strip()[:40]
     note = notes_dir / ("%s-%s.md" % (now().strftime("%Y-%m-%d"), safe))
-    note.write_text(
-        render_note(cur, a.summary, a.output, a.points, actual=a.actual),
-        encoding="utf-8")
+
+    if report_body:
+        # 完整报告：把元信息头拼在前面，正文原样保留
+        head = render_report_head(cur, a.summary, actual=a.actual, output=a.output)
+        note.write_text(head + report_body + "\n", encoding="utf-8")
+    else:
+        # 结构化参数模式：按分类套模板生成
+        if category == "学习":
+            body = render_learning_report(
+                cur, a.summary,
+                goal=a.goal, process=a.process,
+                reasoning=a.reasoning, output=a.output)
+        else:
+            body = render_work_report(
+                cur, a.summary,
+                result=a.goal, process=a.process,
+                leftover=a.leftover, output=a.output)
+        note.write_text(body, encoding="utf-8")
 
     arch = archive(read_all())
-    out({"ok": True, "action": "done", "id": a.id,
-         "note": str(note), "archive": arch})
+    out({"ok": True, "action": "done", "id": a.id, "category": category,
+         "report": str(note), "archive": arch})
 
 
-def render_note(task, summary, output, points, actual=0):
+REPORT_SECTIONS = {
+    "学习": ["学习目标", "学习过程", "结论", "推理过程"],
+    "工作": ["工作任务", "结果", "核心过程", "遗留"],
+}
+
+
+def check_report_sections(text, category):
+    """校验报告是否包含分类要求的章节标题，返回缺失列表"""
+    required = REPORT_SECTIONS.get(category, ["结论"])
+    missing = []
+    for sec in required:
+        # 匹配 markdown 标题行（## 学习目标 / ##二、学习目标 等写法）
+        found = False
+        for line in text.splitlines():
+            s = line.strip().lstrip("#").strip()
+            s = s.lstrip("一二三四五六七八九十、").strip()
+            s = s.rstrip("：:").strip()
+            if s == sec or s.startswith(sec):
+                found = True
+                break
+        if not found:
+            missing.append(sec)
+    return missing
+
+
+def render_report_head(task, summary, actual=0, output=""):
     L = ["# %s\n" % task["title"]]
     L.append("| | |")
     L.append("|---|---|")
     L.append("| 任务 ID | %s |" % task["id"])
+    L.append("| 分类 | %s |" % task["category"])
     L.append("| 项目 | %s |" % (task["project"] or "-"))
     L.append("| 完成时间 | %s |" % now().strftime("%Y-%m-%d %H:%M"))
     actual_val = actual or task["actual"] or 0
@@ -669,12 +746,44 @@ def render_note(task, summary, output, points, actual=0):
     L.append("")
     L.append("## 一句话结论\n")
     L.append(summary.strip() + "\n")
+    return "\n".join(L) + "\n"
+
+
+def render_learning_report(task, summary, goal="", process="",
+                           reasoning="", output=""):
+    """学习报告：目标 / 过程 / 结论 / 推理过程。
+    目标、过程、推理没给全时用占位符标出，不能静默缺省。"""
+    L = [render_report_head(task, summary, output=output)]
+    L.append("## 学习目标\n")
+    L.append((goal or task["outcome"] or "（未填写——补上这次学习要达到的具体目标）") + "\n")
+    L.append("## 学习过程\n")
+    L.append((process or "（未填写——按时间顺序记录学了什么、卡在哪、怎么解决）") + "\n")
+    L.append("## 结论\n")
+    L.append(summary.strip() + "\n")
+    L.append("## 推理过程\n")
+    L.append((reasoning or "（未填写——把推导链条写出来，让没有背景的人能跟上）") + "\n")
     if task["outcome"]:
         L.append("## 当初的完成标准\n")
         L.append(task["outcome"] + "\n")
-    if points:
-        L.append("## 还没搞清楚的地方\n")
-        L.append(points.strip() + "\n")
+    return "\n".join(L)
+
+
+def render_work_report(task, summary, result="", process="",
+                       leftover="", output=""):
+    """工作报告：工作任务 / 结果 / 核心过程 / 遗留任务。
+    结果默认就是一句话结论；过程、遗留没给时占位标出。"""
+    L = [render_report_head(task, summary, output=output)]
+    L.append("## 工作任务\n")
+    L.append((task["title"] or "") + "\n")
+    L.append("## 结果\n")
+    L.append((result or summary).strip() + "\n")
+    L.append("## 核心过程\n")
+    L.append((process or "（未填写——记下关键步骤和决策点，以后照着复现）") + "\n")
+    L.append("## 遗留任务\n")
+    L.append((leftover or "无").strip() + "\n")
+    if task["outcome"]:
+        L.append("## 当初的完成标准\n")
+        L.append(task["outcome"] + "\n")
     return "\n".join(L)
 
 
@@ -908,6 +1017,7 @@ def main():
   task.py list --today
   task.py start T-20261113-01
   task.py done T-20261113-01 --summary "口径定了，客户回了邮件" --output "notes/xxx.md"
+  task.py done T-20261113-02 --summary "学完了" --process "先看了...再做了..." --reasoning "因为...所以..."
   task.py block T-20261113-01 --reason "等客户 ITL 定义确认"
   task.py drop T-20261113-01 --reason "客户改用平均值口径，这条作废"
   task.py stats
@@ -919,6 +1029,7 @@ def main():
     pa.add_argument("title", help="任务名，一句话说清做什么")
     pa.add_argument("--outcome", default="", help="做到什么算完成（可验收）")
     pa.add_argument("--pri", default="中", help="高/中/低")
+    pa.add_argument("--category", default="工作", help="分类：学习/工作")
     pa.add_argument("--project", default="", help="项目名，留空为独立任务")
     pa.add_argument("--parent", default="", help="父任务 ID，做子任务时填")
     pa.add_argument("--est", type=int, default=0, help="预估分钟")
@@ -949,6 +1060,16 @@ def main():
             sp.add_argument("--output", default="", help="产出在哪")
             sp.add_argument("--actual", type=int, default=0, help="实际分钟")
             sp.add_argument("--points", default="", help="还没搞清楚的地方")
+            sp.add_argument("--report", default="",
+                            help="完整报告 md 文件路径；给了就校验章节后原样归档")
+            sp.add_argument("--goal", default="",
+                            help="学习目标（学习）/ 任务结果（工作）")
+            sp.add_argument("--process", default="",
+                            help="学习过程 / 核心过程")
+            sp.add_argument("--reasoning", default="",
+                            help="推理过程（学习任务用）")
+            sp.add_argument("--leftover", default="",
+                            help="遗留任务（工作任务用，默认无）")
         if name in ("block", "drop"):
             sp.add_argument("--reason", default="", help="原因（必填）")
         sp.set_defaults(func=fn)
