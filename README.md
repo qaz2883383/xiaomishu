@@ -113,7 +113,9 @@ python task.py remote                    # 恢复 git 远端凭据
 cp -r skills/xiaomishu ~/.workbuddy/skills/
 ```
 
-skill 定义了操作映射、报告分型规则、铁律（不手改生成物、不替用户决定、ID 不猜）以及 profile.md 加载规则。
+**必做的一步定制**：SKILL.md 顶部「环境常量」表中的数据仓路径是占位符，安装后必须替换为本机实际路径（如 `D:/任务管理/xiaomishu-data`）。这是 skill 全文唯一需要按机器修改的内容——不替换，agent 会因为找不到数据仓而卡死或展开全盘搜索。
+
+skill 定义了操作映射、报告分型规则、铁律（不手改生成物、不替用户决定、ID 不猜、无触发词不写、事实参数不编、单步执行）以及 profile.md 加载规则。
 
 ## 7. 目录说明
 
