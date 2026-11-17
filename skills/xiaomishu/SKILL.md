@@ -49,6 +49,7 @@ description: >
 | "X卡住了" | `python task.py block <id> --reason "等谁/缺什么"` |
 | "X做完了" | 见下方「完成与报告」，按分类走 |
 | "X不做了" | `python task.py drop <id> --reason "为什么放弃"` |
+| "X 标错了/做错了，不该是完成状态" | `python task.py reopen <id> --reason "为什么撤销"`（只能撤销已完成/已放弃；默认回到进行中，`--back todo` 回待做） |
 | "最近干了啥 / 盘点" | `python task.py stats` |
 | "X现在什么情况" | `python task.py show <id>` |
 
@@ -82,7 +83,7 @@ description: >
 ## 铁律（违反即错误操作）
 
 1. **一切写入走 task.py。** 不手改 DASHBOARD.md / data/tasks.json / archive/，不直接调 lark-cli 写表。
-2. **done 必须有 --summary，block/drop 必须有 --reason。** 用户没说就先问，别替用户编。理由要具体到"等谁、缺什么"，"有点难"不算。
+2. **done 必须有 --summary，block/drop 必须有 --reason，reopen 也必须有 --reason。** 用户没说就先问，别替用户编。理由要具体到"等谁、缺什么"，"有点难"不算。撤销的原因（误操作/结论不成立/范围回来了）也是事实，必须来自用户。
 3. **不替用户做决定。** 不改截止日、不放弃任务、不顺延任务——除非用户明说。用户只说"做完了"时，summary 可以复述用户的原话，但要先和用户确认结论。
 4. **没有触发词，不执行写操作。** 上方映射表没有覆盖的意图 → 先问用户要做什么，不要从上下文里自行推断"用户应该想完成/放弃/顺延这个任务"。用户什么都没说时，`add` 默认的 todo 状态就是正确状态，不许主动调 done/block/drop 去覆盖它。
 5. **事实类参数禁止估计。** --actual（耗时）、--est、--points（遗留疑问）、--summary（结论）这些参数的值是事实陈述，只能来自用户原话或本会话内实际发生的事。用户没给 → 省略该参数或先问，绝不编一个合理值填上。

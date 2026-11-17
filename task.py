@@ -395,20 +395,22 @@ def archive(records):
     month_dir.mkdir(parents=True, exist_ok=True)
     ledger = month_dir / "ledger.md"
 
-    # 记录已经入过账的 ID，避免重复追加
+    # 记录已经入过账的（ID, 完成时间）二元组，避免重复追加。
+    # 用二元组而非纯 ID：任务被 reopen 后再次完成时，done_at 是新的，
+    # 二元组不重复，第二次完成能正常入账。
     seen = set()
     if ledger.exists():
         for line in ledger.read_text(encoding="utf-8").splitlines():
             parts = line.split("|")
-            if len(parts) > 2:
+            if len(parts) > 3:
                 tid = parts[2].strip().strip("✅⛔ ").strip()
-                if tid:
-                    seen.add(tid)
+                if tid and "↩️" not in parts[3]:
+                    seen.add((tid, parts[1].strip()))
 
     closed = [i for i in items if i["status"] in ("done", "dropped")]
     new_rows = []
     for it in sorted(closed, key=lambda x: x["done_at"] or x["updated"] or ""):
-        if it["id"] in seen:
+        if (it["id"], it["done_at"] or it["updated"] or "") in seen:
             continue
         mark = "✅" if it["status"] == "done" else "⛔"
         new_rows.append("| %s | %s | %s %s | %s | %s | %s |" % (
@@ -827,6 +829,59 @@ def cmd_drop(a):
          "archive": arch})
 
 
+def cmd_reopen(a):
+    """撤销完成/放弃，把任务拉回活跃。是 done/drop 的逆操作，不是 update 的别名：
+    只接受终态任务，且清理 done/drop 专属字段，避免"进行中却挂着完成时间"的脏数据。"""
+    records = read_all()
+    rec = find_by_id(records, a.id)
+    if not rec:
+        fail("找不到任务 %s" % a.id)
+    if not a.reason:
+        fail("撤销要写理由（--reason）。撤销完成/放弃是不寻常动作，"
+             "必须留痕说明为什么——误操作、结论不成立、还是范围回来了。")
+
+    cur = simplify(rec)
+    if cur["status"] not in ("done", "dropped"):
+        fail("只有 已完成/已放弃 的任务能撤销。当前状态：%s。" % cur["status"])
+
+    # 回退到哪个状态由用户选：默认 doing，也可 --back todo
+    back = "todo" if a.back == "todo" else "doing"
+
+    fields = {
+        F["status"]: [STATUS[back]],
+        # done/drop 专属字段清空
+        F["done_at"]: None,
+        F["summary"]: None,
+        F["archive"]: None,
+        # 撤销原因写进卡点字段留痕（原值被覆盖，但台账里还有闭环时的记录）
+        F["blocker"]: "撤销：%s" % a.reason.strip(),
+    }
+    # 事实字段保留：实际分钟、产出链接是发生过的事，不随状态回退
+    update_record(rec["_record_id"], fields)
+
+    # 台账追加撤销行：闭环记录留着（历史真实发生过），撤销也入账（流水完整）
+    root = Path(CONFIG["archive_dir"])
+    month_dir = root / "archive" / now().strftime("%Y-%m")
+    month_dir.mkdir(parents=True, exist_ok=True)
+    ledger = month_dir / "ledger.md"
+    undo_line = "| %s | %s | ↩️ 撤销《%s》→ %s | %s | %s | %s |\n" % (
+        now().strftime("%Y-%m-%d %H:%M"),
+        cur["id"], cur["title"].replace("|", "/"), back,
+        cur["category"], cur["project"].replace("|", "/") or "",
+        "撤销原因：%s" % a.reason.strip().replace("|", "/"),
+    )
+    with open(ledger, "a", encoding="utf-8") as f:
+        f.write(undo_line)
+
+    arch = archive(read_all())
+    out({"ok": True, "action": "reopen", "id": a.id,
+         "from": cur["status"], "to": back,
+         "report": cur["output"],
+         "hint": ("该任务曾生成报告/小结，路径见 output 字段；"
+                  "报告文件不会自动删除，是否删由用户决定。" if cur["output"] else ""),
+         "archive": arch})
+
+
 def cmd_update(a):
     records = read_all()
     rec = find_by_id(records, a.id)
@@ -1018,6 +1073,7 @@ def main():
   task.py start T-20261113-01
   task.py done T-20261113-01 --summary "口径定了，客户回了邮件" --output "notes/xxx.md"
   task.py done T-20261113-02 --summary "学完了" --process "先看了...再做了..." --reasoning "因为...所以..."
+  task.py reopen T-20261113-01 --reason "误标完成，客户又提了新问题"
   task.py block T-20261113-01 --reason "等客户 ITL 定义确认"
   task.py drop T-20261113-01 --reason "客户改用平均值口径，这条作废"
   task.py stats
@@ -1051,6 +1107,7 @@ def main():
         ("done", cmd_done, "标记完成"),
         ("block", cmd_block, "标记卡住"),
         ("drop", cmd_drop, "放弃"),
+        ("reopen", cmd_reopen, "撤销完成/放弃，拉回活跃"),
         ("show", cmd_show, "看单个任务详情"),
     ]:
         sp = sub.add_parser(name, help=extra)
@@ -1072,6 +1129,11 @@ def main():
                             help="遗留任务（工作任务用，默认无）")
         if name in ("block", "drop"):
             sp.add_argument("--reason", default="", help="原因（必填）")
+        if name == "reopen":
+            sp.add_argument("--reason", default="",
+                            help="为什么撤销（必填）：误操作/结论不成立/范围回来了")
+            sp.add_argument("--back", default="doing",
+                            help="回到哪个状态：doing（默认）/ todo")
         sp.set_defaults(func=fn)
 
     pu = sub.add_parser("update", help="改字段")

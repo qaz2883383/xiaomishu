@@ -95,6 +95,7 @@ python task.py list --status doing,blocked
 python task.py start T-20261113-01
 python task.py update T-20261113-01 --progress "做到哪了"
 python task.py block T-20261113-01 --reason "等谁/缺什么"
+python task.py reopen T-20261113-01 --reason "为什么撤销"   # 撤销完成/放弃，回到进行中（--back todo 回待做）
 python task.py done T-20261113-01 --summary "结论" \
     --goal "学习目标/任务结果" --process "过程" \
     --reasoning "推理（学习）" --leftover "遗留（工作）"
