@@ -50,6 +50,7 @@ description: >
 | "X做完了" | 见下方「完成与报告」，按分类走 |
 | "X不做了" | `python task.py drop <id> --reason "为什么放弃"` |
 | "X 标错了/做错了，不该是完成状态" | `python task.py reopen <id> --reason "为什么撤销"`（只能撤销已完成/已放弃；默认回到进行中，`--back todo` 回待做） |
+| "我误删了任务X / 表里少了一条" | `python task.py restore`（预览）→ 把预览结果给用户看 → 用户确认后 `restore --yes`；只恢复一条用 `restore --id <旧ID> --yes`。恢复后 **ID 会变**（新旧对照在输出里），父子引用脚本自动修 |
 | "最近干了啥 / 盘点" | `python task.py stats` |
 | "X现在什么情况" | `python task.py show <id>` |
 
@@ -83,6 +84,7 @@ description: >
 ## 铁律（违反即错误操作）
 
 1. **一切写入走 task.py。** 不手改 DASHBOARD.md / data/tasks.json / archive/，不直接调 lark-cli 写表。
+2. **物理删除是禁区。** task.py 没有删除命令——这是设计：任务终态是已完成/已放弃，记录永不物理删除。任何情况下禁止调 lark-cli 的 record-delete / record-batch-delete（清测试数据也不行，除非用户明确下达"删除记录"指令并二次确认）。用户说"删任务"时，先告知：小秘书的删除是 drop（留痕放弃），飞书手动删行没有回收站，真删了只能靠 graveyard 碰运气恢复。
 2. **done 必须有 --summary，block/drop 必须有 --reason，reopen 也必须有 --reason。** 用户没说就先问，别替用户编。理由要具体到"等谁、缺什么"，"有点难"不算。撤销的原因（误操作/结论不成立/范围回来了）也是事实，必须来自用户。
 3. **不替用户做决定。** 不改截止日、不放弃任务、不顺延任务——除非用户明说。用户只说"做完了"时，summary 可以复述用户的原话，但要先和用户确认结论。
 4. **没有触发词，不执行写操作。** 上方映射表没有覆盖的意图 → 先问用户要做什么，不要从上下文里自行推断"用户应该想完成/放弃/顺延这个任务"。用户什么都没说时，`add` 默认的 todo 状态就是正确状态，不许主动调 done/block/drop 去覆盖它。
@@ -110,6 +112,7 @@ git push   # 失败不阻塞任务流程，提醒用户稍后重推即可
 | 时间 | 任务 | 动作 |
 |---|---|---|
 | 工作日 09:15 | 晨扫 | `task.py list --today` + `stats`，向用户提示今天的任务安排 |
+| 每天 13:00 | 对账 | `task.py sync`——把飞书侧手动增改（含误删）收进快照/graveyard，压缩盲区 |
 | 每天 17:20 | 日报 | `task.py stats` 汇总当天完成情况，写一份当日总结到 `notes/日报/YYYY/`，然后 commit + push 数据仓 |
 
 ## 会话开场检查

@@ -74,7 +74,7 @@
 
 ## 六、数据回灌（可选）
 
-若数据仓 `data/tasks.json` 快照里有历史数据（count > 0），重建表后可用它回灌：逐条按字段清单把 tasks 数组写回新表（日期字段转毫秒时间戳，select 字段包成单元素数组）。task.py 的 `restore` 命令规划中，当前可由 agent 按 tasks.json 结构代写。
+若数据仓 `data/tasks.json` 快照里有历史数据（count > 0），重建表后可用它回灌：逐条按字段清单把 tasks 数组写回新表（日期字段转毫秒时间戳，select 字段包成单元素数组）。误删单条记录的恢复走 `python task.py restore`（从 `data/graveyard.json` 回灌，预览→确认，输出新旧 ID 对照表并自动修复父任务引用）——整库重建则用 tasks.json 逐条 `add` 或由 agent 代写。
 
 ## 七、配置接入
 

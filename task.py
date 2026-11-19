@@ -358,10 +358,35 @@ def find_by_id(records, tid):
 
 # ---------------------------------------------------------------- 归档
 
+def load_graveyard():
+    """读 data/graveyard.json（被删记录收容所）。不存在则返回空骨架。"""
+    gpath = Path(CONFIG["archive_dir"]) / "data" / "graveyard.json"
+    if gpath.exists():
+        try:
+            g = json.loads(gpath.read_text(encoding="utf-8"))
+            if isinstance(g, dict) and isinstance(g.get("entries"), list):
+                return g, gpath
+        except Exception:
+            pass
+    return {"updated_at": "", "entries": []}, gpath
+
+
+def save_graveyard(g, gpath):
+    g["updated_at"] = now().strftime("%Y-%m-%d %H:%M:%S")
+    gpath.parent.mkdir(parents=True, exist_ok=True)
+    gpath.write_text(json.dumps(g, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def archive(records):
     """
     把当前全量快照写成归档文件。这是「换环境能恢复」的关键：
     归档里既有数据内容，也有恢复所需的元信息。
+
+    同时做「消失检测」：上一轮快照里有、本轮表里没有的记录，
+    唯一解释是被删除（done/drop 只改状态不会让记录消失）。
+    这些记录收进 data/graveyard.json，供 restore 命令恢复。
+    没有这一步，快照每次全量覆盖会把被删记录「洗掉」，
+    误删将永远无法找回。
     """
     root = Path(CONFIG["archive_dir"])
     if not root.exists():
@@ -373,6 +398,33 @@ def archive(records):
     items = [simplify(r) for r in records]
     ts = now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # 0) 消失检测：必须在新快照覆盖写入之前读旧快照，读到的才是「上一轮」
+    (root / "data").mkdir(exist_ok=True)
+    snap_path = root / "data" / "tasks.json"
+    snap_old = None
+    if snap_path.exists():
+        try:
+            snap_old = json.loads(snap_path.read_text(encoding="utf-8"))
+        except Exception:
+            snap_old = None
+    vanished_new = 0
+    if snap_old and isinstance(snap_old.get("tasks"), list):
+        g, gpath = load_graveyard()
+        known = {e.get("old_id") for e in g["entries"]}
+        current_ids = {i["id"] for i in items if i["id"]}
+        for t in snap_old["tasks"]:
+            oid = t.get("id")
+            if oid and oid not in current_ids and oid not in known:
+                g["entries"].append({
+                    "old_id": oid,
+                    "task": t,
+                    "vanished_at": ts,
+                    "status": "active",
+                })
+                vanished_new += 1
+        if vanished_new:
+            save_graveyard(g, gpath)
+
     # 1) 快照：机器可读，恢复时直接读这个
     snap = {
         "snapshot_at": ts,
@@ -382,8 +434,6 @@ def archive(records):
         "count": len(items),
         "tasks": items,
     }
-    (root / "data").mkdir(exist_ok=True)
-    snap_path = root / "data" / "tasks.json"
     snap_path.write_text(json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 2) 视图：人可读，手机上翻也方便
@@ -437,6 +487,7 @@ def archive(records):
         "snapshot": str(snap_path),
         "dashboard": str(md_path),
         "ledger_new_rows": len(new_rows),
+        "graveyard_new": vanished_new,
         "count": len(items),
     }
 
@@ -1052,6 +1103,147 @@ def cmd_remote(a):
          "hint": "" if all_ok else "有仓库未恢复，检查路径是否存在 .git"})
 
 
+def task_to_fields(t, new_id=None):
+    """graveyard 里的任务快照 -> 飞书写入格式（select 包数组、日期转毫秒）"""
+    def ms_from_str(v):
+        if not v:
+            return None
+        try:
+            d = datetime.strptime(str(v)[:16], "%Y-%m-%d %H:%M")
+            return ms(d.replace(tzinfo=CONFIG["tz"]))
+        except ValueError:
+            return None
+
+    status = t.get("status") or "todo"
+    if status not in STATUS:
+        status = "todo"
+    fields = {
+        F["title"]: t.get("title") or "",
+        F["status"]: [STATUS[status]],
+        F["pri"]: [norm_pri(t.get("pri"))],
+        F["category"]: [norm_category(t.get("category"))],
+    }
+    if t.get("outcome"):
+        fields[F["outcome"]] = t["outcome"]
+    if t.get("project"):
+        fields[F["project"]] = t["project"]
+    if new_id:
+        fields[F["parent"]] = new_id  # 挂新 ID（子任务恢复时由调用方替换为对照表中的新值）
+    elif t.get("parent"):
+        fields[F["parent"]] = t["parent"]
+    if t.get("est"):
+        fields[F["est"]] = int(t["est"])
+    if t.get("actual"):
+        fields[F["actual"]] = int(t["actual"])
+    if t.get("defers"):
+        fields[F["defers"]] = int(t["defers"])
+    if t.get("blocker"):
+        fields[F["blocker"]] = t["blocker"]
+    if t.get("progress"):
+        fields[F["progress"]] = t["progress"]
+    if t.get("output"):
+        fields[F["output"]] = t["output"]
+    if t.get("summary"):
+        fields[F["summary"]] = t["summary"]
+    if t.get("started"):
+        v = ms_from_str(t["started"])
+        if v:
+            fields[F["started"]] = v
+    if t.get("done_at"):
+        v = ms_from_str(t["done_at"])
+        if v:
+            fields[F["done_at"]] = v
+    if t.get("plan_day"):
+        v = ms_from_str(t["plan_day"])
+        if v:
+            fields[F["plan_day"]] = v
+    if t.get("due"):
+        v = ms_from_str(t["due"])
+        if v:
+            fields[F["due"]] = v
+    if t.get("archive_month"):
+        fields[F["archive"]] = t["archive_month"]
+    return fields
+
+
+def cmd_restore(a):
+    """
+    从 graveyard 恢复被误删的任务。
+
+    机制：sync/archive 做消失检测，被删记录收进 data/graveyard.json。
+    restore 默认只做「查库+预览」；--yes 才真正回灌。
+    回灌后记录获得新 ID（auto_number 不可手填），输出新旧 ID 对照表，
+    并把表里其它任务的父任务ID 引用从旧 ID 改成新 ID。
+    """
+    g, gpath = load_graveyard()
+    entries = [e for e in g["entries"] if e.get("status") == "active"]
+
+    if not entries:
+        out({"ok": True, "restored": [], "id_map": {},
+             "note": "graveyard 为空，没有可恢复的被删记录"})
+
+    # 目标选择：--id 精确选，默认全部
+    if a.id:
+        picked = [e for e in entries if e.get("old_id") == a.id]
+        if not picked:
+            fail("graveyard 里没有 %s（或已恢复过）" % a.id)
+    else:
+        picked = entries
+
+    if not a.yes:
+        previews = []
+        for e in picked:
+            t = e.get("task") or {}
+            previews.append({
+                "old_id": e.get("old_id"),
+                "title": t.get("title"),
+                "status": t.get("status"),
+                "category": t.get("category"),
+                "vanished_at": e.get("vanished_at"),
+            })
+        out({"ok": True, "preview": previews,
+             "note": "预览模式。确认后加 --yes 执行恢复；--id <旧ID> 可只恢复一条"})
+
+    # ---- 真正恢复 ----
+    records = read_all()
+    id_map = {}
+    restored = []
+    for e in picked:
+        t = e.get("task") or {}
+        rid = create_record(task_to_fields(t))
+        records = read_all()
+        created = None
+        if rid:
+            for r in records:
+                if r.get("_record_id") == rid:
+                    created = simplify(r)
+                    break
+        if not created:
+            continue
+        id_map[e.get("old_id")] = created["id"]
+        e["status"] = "restored"
+        e["restored_at"] = now().strftime("%Y-%m-%d %H:%M:%S")
+        e["new_id"] = created["id"]
+        restored.append(created)
+
+    # 修父任务引用：表里其它任务 parent 指向旧 ID 的，改成新 ID
+    parent_fixed = []
+    if id_map:
+        records = read_all()
+        for rec in records:
+            cur = simplify(rec)
+            if cur["parent"] and cur["parent"] in id_map:
+                update_record(rec["_record_id"], {F["parent"]: id_map[cur["parent"]]})
+                parent_fixed.append({"id": cur["id"],
+                                     "parent_old": cur["parent"],
+                                     "parent_new": id_map[cur["parent"]]})
+
+    save_graveyard(g, gpath)
+    arch = archive(read_all())
+    out({"ok": True, "action": "restore", "restored": restored,
+         "id_map": id_map, "parent_fixed": parent_fixed, "archive": arch})
+
+
 def cmd_sync(a):
     """只重新生成归档，不改数据。改完飞书后手动刷一次用"""
     records = read_all()
@@ -1076,6 +1268,9 @@ def main():
   task.py reopen T-20261113-01 --reason "误标完成，客户又提了新问题"
   task.py block T-20261113-01 --reason "等客户 ITL 定义确认"
   task.py drop T-20261113-01 --reason "客户改用平均值口径，这条作废"
+  task.py restore                     # 预览可恢复的误删任务
+  task.py restore --yes              # 全部恢复（确认后）
+  task.py restore --id T-20261113-03 --yes   # 只恢复一条
   task.py stats
   task.py doctor
         """)
@@ -1155,8 +1350,12 @@ def main():
         ("sync", cmd_sync, "重新生成归档"),
         ("export", cmd_export, "导出全量快照"),
         ("remote", cmd_remote, "从 config 恢复 git 远端凭据"),
+        ("restore", cmd_restore, "恢复误删任务（先预览，--yes 执行）"),
     ]:
         sp = sub.add_parser(name, help=h)
+        if name == "restore":
+            sp.add_argument("--id", default="", help="只恢复这一条（旧任务 ID）")
+            sp.add_argument("--yes", action="store_true", help="确认执行（默认只预览）")
         sp.set_defaults(func=fn)
 
     a = p.parse_args()

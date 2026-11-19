@@ -102,7 +102,9 @@ python task.py done T-20261113-01 --summary "结论" \
 python task.py done T-20261113-01 --summary "结论" --report 报告.md   # 完整报告
 python task.py stats                     # 统计盘点
 python task.py doctor                    # 环境自检
-python task.py sync                      # 重新生成看板/快照/台账
+python task.py sync                      # 重新生成看板/快照/台账（并捕捉被删记录进 graveyard）
+python task.py restore                   # 预览可恢复的误删任务
+python task.py restore --yes             # 确认恢复（--id T-xxx 只恢复一条）
 python task.py remote                    # 恢复 git 远端凭据
 ```
 
